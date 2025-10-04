@@ -1,17 +1,17 @@
 version: 0.2
 phases:
-  install:
-    runtime-versions:
-      nodejs: 18
-    commands:
-      - echo Installing Node.js runtime
-  build:
-    commands:
-      - echo Build started on `date`
-      - echo "No build steps needed for static HTML"
-  post_build:
-    commands:
-      - echo Build completed on `date`
+ install:
+  runtime-versions:
+   nodejs: 18
+ commands:
+  - echo Installing Node.js runtime
+ build:
+  commands:
+   - echo Build started on `date`
+   - echo "No build steps needed for static HTML"
+ post_build:
+  commands:
+   - echo Build completed on `date`
 artifacts:
-  files:
-    - '**/*'
+ files:
+  - '**/*'
