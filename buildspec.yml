@@ -3,6 +3,8 @@ phases:
   install:
     runtime-versions:
       nodejs: 18
+    commands:
+      - echo Installing Node.js runtime
   build:
     commands:
       - echo Build started on `date`
