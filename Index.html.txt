@@ -1,16 +1,370 @@
-<!DOCTYPE html> 
-<html lang="en"> 
-<head> 
-<meta charset="UTF-8"> 
-<title>AWS Pipeline Demo</title> 
-<style> 
-body { font-family: sans-serif; text-align: center; margin-top: 100px; background-color: 
-#232F3E; color: #FFFFFF; } 
-h1 { color: #FF9900; } 
-</style> 
-</head> 
-<body> 
-<h1>Welcome to My Application!</h1> 
-<p>This page was deployed successfully using AWS CodePipeline!</p> 
-</body> 
-</html>
+from flask import Flask, request, jsonify, render_template, redirect, session, url_for
+from flask_cors import CORS
+import sqlite3
+from werkzeug.security import generate_password_hash, check_password_hash
+from functools import wraps
+from datetime import timedelta  # Add this import
+
+app = Flask(__name__)
+
+# Enhanced CORS configuration
+CORS(app, 
+     origins=["http://localhost:3000","http://localhost:5000", "http://127.0.0.1:5000"],
+     supports_credentials=True,
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+     allow_headers=["Content-Type", "Authorization"])
+
+app.secret_key = 'your-secret-key-here'  # Change this to a random secret key
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=12)  # Now this will work
+app.config['SESSION_REFRESH_EACH_REQUEST'] = True
+
+# Add this after_request handler for CORS
+    
+
+# Database file
+DB_FILE = "users.db"
+
+# Initialize database (create table if not exists)
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        role TEXT NOT NULL,
+                        fullName TEXT NOT NULL,
+                        mobileNumber TEXT UNIQUE NOT NULL,
+                        password TEXT NOT NULL
+                    )''')
+    
+    # Create buses table for tracking
+    cursor.execute('''CREATE TABLE IF NOT EXISTS buses (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        bus_number TEXT NOT NULL,
+                        route TEXT NOT NULL,
+                        current_location TEXT,
+                        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )''')
+    
+    # Create routes table
+    cursor.execute('''CREATE TABLE IF NOT EXISTS routes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        from_location TEXT NOT NULL,
+                        to_location TEXT NOT NULL,
+                        distance REAL,
+                        estimated_time TEXT
+                    )''')
+    
+    # Create locations table for location names
+    cursor.execute('''CREATE TABLE IF NOT EXISTS locations (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        location_name TEXT NOT NULL UNIQUE,
+                        latitude REAL,
+                        longitude REAL
+                    )''')
+    
+    # Insert some sample data
+    cursor.execute("SELECT COUNT(*) FROM buses")
+    if cursor.fetchone()[0] == 0:
+        cursor.executemany("INSERT INTO buses (bus_number, route, current_location) VALUES (?, ?, ?)",
+                          [
+                              ('BUS001', 'Downtown to Airport', 'Main Street & 5th Avenue'),
+                              ('BUS002', 'University to Mall', 'College Campus Entrance'),
+                              ('BUS003', 'Central Station to Beach', 'Ocean View Road Junction')
+                          ])
+    
+    cursor.execute("SELECT COUNT(*) FROM routes")
+    if cursor.fetchone()[0] == 0:
+        cursor.executemany("INSERT INTO routes (from_location, to_location, distance, estimated_time) VALUES (?, ?, ?, ?)",
+                          [
+                              ('Downtown', 'Airport', 15.5, '45 min'),
+                              ('University', 'Shopping Mall', 8.2, '25 min'),
+                              ('Central Station', 'Beach', 12.7, '35 min'),
+                              ('City Center', 'Stadium', 6.3, '20 min')
+                          ])
+    
+    # Insert sample location names
+    cursor.execute("SELECT COUNT(*) FROM locations")
+    if cursor.fetchone()[0] == 0:
+        cursor.executemany("INSERT INTO locations (location_name, latitude, longitude) VALUES (?, ?, ?)",
+                          [
+                              ('Main Street & 5th Avenue', 40.7128, -74.0060),
+                              ('College Campus Entrance', 40.7589, -73.9851),
+                              ('Ocean View Road Junction', 40.7794, -73.9632),
+                              ('Central Bus Terminal', 40.7505, -73.9934),
+                              ('City Hall Square', 40.7127, -74.0060),
+                              ('Shopping District', 40.7614, -73.9776)
+                          ])
+    
+    # Create a sample user if none exists
+    cursor.execute("SELECT COUNT(*) FROM users")
+    if cursor.fetchone()[0] == 0:
+        hashed_password = generate_password_hash('password123')
+        cursor.execute("INSERT INTO users (role, fullName, mobileNumber, password) VALUES (?, ?, ?, ?)",
+                       ('passenger', 'John Doe', '1234567890', hashed_password))
+    
+    conn.commit()
+    conn.close()
+
+# Run once at startup
+init_db()
+
+# Enhanced login required decorator
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            # Check if this is an API request
+            if request.path.startswith('/api/'):
+                return jsonify({
+                    "message": "Please login first", 
+                    "redirect": "/login",
+                    "status": "auth_required"
+                }), 401
+            else:
+                # For page requests, redirect directly
+                next_url = request.url
+                login_url = url_for('login_page', next=next_url)
+                return redirect(login_url)
+        return f(*args, **kwargs)
+    return decorated_function
+@app.route('/api/status')
+def api_status():
+    return jsonify({"status": "running"})
+# Check if user is logged in (for frontend)
+@app.route("/api/check-auth")
+def check_auth():
+    if 'user_id' in session:
+        return jsonify({
+            "authenticated": True,
+            "user": {
+                "id": session.get('user_id'),
+                "role": session.get('user_role'),
+                "fullName": session.get('user_name'),
+                "mobileNumber": session.get('mobile_number')
+            }
+        }), 200
+    else:
+        return jsonify({"authenticated": False}), 200
+
+@app.route("/")
+def home():
+    return render_template('index.html')
+
+@app.route("/login")
+def login_page():
+    # Get the redirect URL from query parameters
+    next_url = request.args.get('next', '/')
+    return render_template('login.html', next_url=next_url)
+
+@app.route("/signup", methods=["GET"])
+def signup_page():
+    return render_template('signup.html')
+
+@app.route("/api/signup", methods=["POST"])
+def api_signup():
+    try:
+        data = request.get_json()
+        role = data.get("role")
+        full_name = data.get("fullName")
+        mobile_number = data.get("mobileNumber")
+        password = data.get("password")
+
+        if not all([role, full_name, mobile_number, password]):
+            return jsonify({"message": "All fields are required!"}), 400
+
+        # Hash the password
+        hashed_password = generate_password_hash(password)
+
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+
+        # Check if user exists
+        cursor.execute("SELECT * FROM users WHERE mobileNumber = ?", (mobile_number,))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({"message": "User already exists with this mobile number!"}), 400
+
+        # Insert new user
+        cursor.execute("INSERT INTO users (role, fullName, mobileNumber, password) VALUES (?, ?, ?, ?)",
+                       (role, full_name, mobile_number, hashed_password))
+        conn.commit()
+        conn.close()
+
+        return jsonify({"message": f"{role} registered successfully!"}), 201
+
+    except Exception as e:
+        return jsonify({"message": "Server error: " + str(e)}), 500
+
+@app.route("/api/login", methods=["POST", "OPTIONS"])
+def api_login():
+    try:
+        # Handle preflight requests for CORS
+        if request.method == "OPTIONS":
+            return jsonify({"status": "ok"}), 200
+
+        data = request.get_json(silent=True)
+        if data:  # JSON request (React/AJAX)
+            mobile_number = data.get("mobileNumber")
+            password = data.get("password")
+            next_url = data.get("next", "/")
+        else:  # Form request (normal HTML form)
+            mobile_number = request.form.get("mobileNumber")
+            password = request.form.get("password")
+            next_url = request.form.get("next", "/")
+
+        if not all([mobile_number, password]):
+            return jsonify({"message": "Mobile number and password are required!"}), 400
+
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE mobileNumber = ?", (mobile_number,))
+        user = cursor.fetchone()
+        conn.close()
+
+        if user and check_password_hash(user[4], password):
+            # Store user info in session
+            session['user_id'] = user[0]
+            session['user_role'] = user[1]
+            session['user_name'] = user[2]
+            session['mobile_number'] = user[3]
+
+            # For AJAX requests, return JSON
+            if request.is_json:
+                return jsonify({
+                    "message": "Login successful!",
+                    "redirect": next_url,
+                    "user": {
+                        "id": user[0],
+                        "role": user[1],
+                        "fullName": user[2],
+                        "mobileNumber": user[3]
+                    }
+                }), 200
+            else:
+                # For form submissions, redirect
+                return redirect(next_url)
+
+        else:
+            return jsonify({"message": "Invalid mobile number or password!"}), 401
+
+    except Exception as e:
+        return jsonify({"message": "Server error: " + str(e)}), 500
+
+
+@app.route("/api/logout")
+def logout():
+    session.clear()
+    return jsonify({"message": "Logged out successfully"}), 200
+
+# Protected page examples
+@app.route("/track-bus")
+@login_required
+def track_bus_page():
+    return render_template('track-bus.html')
+
+@app.route("/plan-journey")
+@login_required
+def plan_journey_page():
+    return render_template('plan-journey.html')
+
+@app.route("/view-routes")
+@login_required
+def view_routes_page():
+    return render_template('view-routes.html')
+
+# All protected API routes
+@app.route("/api/search-buses", methods=["POST"])
+@login_required
+def search_buses():
+    # Your existing implementation
+    try:
+        data = request.get_json()
+        from_location = data.get("from")
+        to_location = data.get("to")
+
+        if not all([from_location, to_location]):
+            return jsonify({"message": "From and to locations are required!"}), 400
+
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Search for routes that match the from and to locations
+        cursor.execute("""
+            SELECT * FROM routes 
+            WHERE from_location LIKE ? AND to_location LIKE ?
+        """, (f'%{from_location}%', f'%{to_location}%'))
+        
+        routes = cursor.fetchall()
+        
+        # If routes found, get buses on those routes
+        buses = []
+        if routes:
+            route_names = [route[2] for route in routes]
+            placeholders = ','.join('?' * len(route_names))
+            
+            cursor.execute(f"""
+                SELECT * FROM buses 
+                WHERE route IN ({placeholders})
+            """, route_names)
+            
+            buses = cursor.fetchall()
+        
+        conn.close()
+        
+        # Format the response
+        formatted_routes = []
+        for route in routes:
+            formatted_routes.append({
+                "id": route[0],
+                "from": route[1],
+                "to": route[2],
+                "distance": route[3],
+                "estimated_time": route[4]
+            })
+            
+        formatted_buses = []
+        for bus in buses:
+            formatted_buses.append({
+                "id": bus[0],
+                "bus_number": bus[1],
+                "route": bus[2],
+                "current_location": bus[3],
+                "last_updated": bus[4]
+            })
+        
+        return jsonify({
+            "routes": formatted_routes,
+            "buses": formatted_buses
+        }), 200
+
+    except Exception as e:
+        return jsonify({"message": "Server error: " + str(e)}), 500
+
+@app.route("/api/track-bus/<bus_number>")
+@login_required
+def track_bus(bus_number):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM buses WHERE bus_number = ?", (bus_number,))
+        bus = cursor.fetchone()
+        conn.close()
+        
+        if bus:
+            return jsonify({
+                "id": bus[0],
+                "bus_number": bus[1],
+                "route": bus[2],
+                "current_location": bus[3],
+                "last_updated": bus[4]
+            }), 200
+        else:
+            return jsonify({"message": "Bus not found!"}), 404
+
+    except Exception as e:
+        return jsonify({"message": "Server error: " + str(e)}), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True) 
